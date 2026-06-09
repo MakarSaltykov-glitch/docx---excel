@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Конвертер Word в Excel (Браузерный)</title>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        .file-input-wrapper {
+            margin-bottom: 20px;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .custom-file-upload {
+            border: 2px dashed #3498db;
+            color: #3498db;
+            background-color: #f9fbfd;
+            padding: 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            display: inline-block;
+            width: 100%;
+            box-sizing: border-box;
+            transition: all 0.3s ease;
+        }
+        .custom-file-upload:hover {
+            background-color: #3498db;
+            color: #fff;
+        }
+        .btn-submit {
+            background-color: #2ecc71;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+        }
+        .btn-submit:hover {
+            background-color: #27ae60;
+        }
+        #status-message {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #7f8c8d;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Word ➔ Excel Онлайн</h2>
+
+    <div class="file-input-wrapper">
+        <label class="custom-file-upload">
+            <input type="file" id="word_file" accept=".docx" onchange="updateFileName()">
+            Выбрать файл (.docx)
+        </label>
+        <div id="status-message">Файл не выбран</div>
+    </div>
+
+    <button type="button" class="btn-submit" id="submit-btn" onclick="processFile()">Конвертировать и скачать</button>
+</div>
+
+<script>
+    function updateFileName() {
+        const input = document.getElementById('word_file');
+        const statusDiv = document.getElementById('status-message');
+        if (input.files.length > 0) {
+            statusDiv.innerText = "Выбран: " + input.files[0].name;
+            statusDiv.style.color = "#7f8c8d";
+        } else {
+            statusDiv.innerText = "Файл не выбран";
+        }
+    }
+
+    async function processFile() {
+        const input = document.getElementById('word_file');
+        const statusDiv = document.getElementById('status-message');
+        const btn = document.getElementById('submit-btn');
+
+        if (input.files.length === 0) {
+            statusDiv.innerText = "Ошибка: Сначала выберите файл!";
+            statusDiv.style.color = "#e74c3c";
+            return;
+        }
+
+        const file = input.files[0];
+
+        // Меняем состояние кнопки
+        btn.innerText = "Обработка...";
+        btn.style.backgroundColor = "#95a5a6";
+        btn.style.pointerEvents = "none";
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+
+            // 1. Создаем Excel документ через ExcelJS
+            const workbook = new ExcelJS.Workbook();
+            const worksheet = workbook.addWorksheet('Данные из Word');
+            let rowOffset = 1;
+
+            // 2. ИЗВЛЕКАЕМ ТАБЛИЦЫ (через mammoth)
+            // Превращаем docx в сырой HTML, чтобы легко достать таблицы
+            const result = await mammoth.convertToHtml({arrayBuffer: arrayBuffer});
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = result.value;
+
+            const tables = tempDiv.getElementsByTagName('table');
+
+            for (let table of tables) {
+                const rows = table.getElementsByTagName('tr');
+                for (let i = 0; i < rows.length; i++) {
+                    const cols = rows[i].querySelectorAll('td, th');
+                    for (let j = 0; j < cols.length; j++) {
+                        worksheet.getCell(rowOffset + i, j + 1).value = cols[j].innerText.trim();
+                    }
+                }
+                rowOffset += rows.length + 2; // Отступ между таблицами
+            }
+
+            // 3. ИЗВЛЕКАЕМ КАРТИНКИ (через JSZip, так как mammoth не дает удобных координат)
+            const zip = await JSZip.loadAsync(arrayBuffer);
+            const mediaFolder = zip.folder("word/media");
+
+            if (mediaFolder) {
+                const images = Object.keys(mediaFolder.files);
+
+                for (let imgPath of images) {
+                    if (imgPath.endsWith('.png') || imgPath.endsWith('.jpeg') || imgPath.endsWith('.jpg') || imgPath.endsWith('.gif')) {
+                        const imgFile = zip.file(imgPath);
+                        const imgBlob = await imgFile.async("blob");
+                        const imgBase64 = await blobToBase64(imgBlob);
+
+                        // Определяем тип картинки для ExcelJS
+                        let extension = imgPath.split('.').pop().toLowerCase();
+                        if (extension === 'jpg') extension = 'jpeg';
+
+                        // Добавляем изображение в архив Excel
+                        const imageId = workbook.addImage({
+                            base64: imgBase64,
+                            extension: extension,
+                        });
+
+                        // Настраиваем высоту строки под картинку (примерно 80 единиц)
+                        worksheet.getRow(rowOffset).height = 80;
+
+                        // Прикрепляем картинку к ячейке A{rowOffset}
+                        worksheet.addImage(imageId, {
+                            tl: { col: 0, row: rowOffset - 1 },
+                            ext: { width: 130, height: 100 } // Примерный размер отображения
+                        });
+
+                        rowOffset += 6; // Шаг, чтобы не накладывались
+                    }
+                }
+            }
+
+            // 4. СКАЧИВАЕМ РЕЗУЛЬТАТ
+            const buffer = await workbook.xlsx.writeBuffer();
+            const excelBlob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+            const downloadUrl = window.URL.createObjectURL(excelBlob);
+            const a = document.createElement("a");
+            a.href = downloadUrl;
+
+            // Формируем имя файла
+            const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+            a.download = baseName + ".xlsx";
+
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            statusDiv.innerText = "Готово! ✅ Файл скачан.";
+            statusDiv.style.color = "#2ecc71";
+
+        } catch (error) {
+            console.error(error);
+            statusDiv.innerText = "Ошибка при обработке: " + error.message;
+            statusDiv.style.color = "#e74c3c";
+        } finally {
+            // Возвращаем кнопку в исходное состояние
+            btn.innerText = "Конвертировать и скачать";
+            btn.style.backgroundColor = "#2ecc71";
+            btn.style.pointerEvents = "auto";
+        }
+    }
+
+    // Утилита для перевода картинок в Base64 формат
+    function blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+</script>
+
+</body>
+</html>
